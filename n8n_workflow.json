@@ -1,0 +1,290 @@
+{
+  "name": "Movie Poster Instagram Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 8 * * *" }]
+        }
+      },
+      "id": "node_schedule",
+      "name": "Daily 8am trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [260, 60]
+    },
+    {
+      "parameters": {
+        "url": "https://api.themoviedb.org/3/movie/popular",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "language", "value": "en-US" },
+            { "name": "page",     "value": "1"    }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_tmdb_popular",
+      "name": "TMDB – popular",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 220],
+      "credentials": { "httpHeaderAuth": { "id": "TMDB_CRED_ID", "name": "TMDB Bearer" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.themoviedb.org/3/movie/now_playing",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "language", "value": "en-US" },
+            { "name": "region",   "value": "IN"    },
+            { "name": "page",     "value": "1"     }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_tmdb_nowplaying",
+      "name": "TMDB – now playing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 220],
+      "credentials": { "httpHeaderAuth": { "id": "TMDB_CRED_ID", "name": "TMDB Bearer" } }
+    },
+    {
+      "parameters": { "mode": "mergeByIndex" },
+      "id": "node_merge1",
+      "name": "Merge lists",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [260, 380]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine both TMDB result arrays, deduplicate by id, keep top 8 by popularity\nconst listA = $input.all()[0].json.results || [];\nconst listB = $input.all()[1]?.json?.results || [];\n\nconst seen = new Set();\nconst combined = [...listA, ...listB].filter(m => {\n  if (seen.has(m.id)) return false;\n  seen.add(m.id);\n  return true;\n});\n\nconst top = combined\n  .sort((a, b) => b.popularity - a.popularity)\n  .slice(0, 8);\n\nreturn top.map(m => ({ json: m }));"
+      },
+      "id": "node_dedup",
+      "name": "Deduplicate & top 8",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 520]
+    },
+    {
+      "parameters": { "batchSize": 1, "options": {} },
+      "id": "node_loop",
+      "name": "Loop over movies",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [260, 660]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.themoviedb.org/3/movie/{{ $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "append_to_response", "value": "credits,release_dates" },
+            { "name": "language",           "value": "en-US"                 }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_tmdb_detail",
+      "name": "TMDB – movie detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 820],
+      "credentials": { "httpHeaderAuth": { "id": "TMDB_CRED_ID", "name": "TMDB Bearer" } }
+    },
+    {
+      "parameters": {
+        "url": "=https://imdb236.p.rapidapi.com/imdb/{{ $json.imdb_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "node_rapidapi_imdb",
+      "name": "RapidAPI – IMDB data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 820],
+      "credentials": { "httpHeaderAuth": { "id": "RAPIDAPI_CRED_ID", "name": "RapidAPI IMDB" } },
+      "notes": "Header: X-RapidAPI-Key and X-RapidAPI-Host must be set in the credential named 'RapidAPI IMDB'"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge TMDB detail + RapidAPI IMDB into a single clean movie object\nconst detail = $('TMDB – movie detail').first().json;\nconst imdb   = $('RapidAPI – IMDB data').first().json;\n\nconst posterUrl = detail.poster_path\n  ? `https://image.tmdb.org/t/p/w780${detail.poster_path}`\n  : null;\n\nconst topCast = (detail.credits?.cast || [])\n  .slice(0, 3)\n  .map(c => c.name)\n  .join(', ');\n\nconst genres = (detail.genres || [])\n  .map(g => g.name)\n  .join(',');\n\nconst releaseYear = (detail.release_date || '').split('-')[0] || 'N/A';\n\nconst imdbRating = imdb.rating?.aggregate_rating ?? imdb.averageRating ?? 'N/A';\n\nreturn [{\n  json: {\n    tmdb_id:      detail.id,\n    imdb_id:      detail.imdb_id,\n    title:        detail.title,\n    overview:     detail.overview,\n    genres:       genres,\n    release_year: releaseYear,\n    runtime:      detail.runtime,\n    popularity:   detail.popularity,\n    poster_url:   posterUrl,\n    cast:         topCast,\n    imdb_rating:  String(imdbRating),\n    vote_count:   imdb.numVotes ?? detail.vote_count,\n  }\n}];"
+      },
+      "id": "node_enrich",
+      "name": "Enrich – merge fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 980]
+    },
+    {
+      "parameters": {
+        "command": "=python3 /YOUR/PATH/n8n-movies/overlay.py \\\n  --input      \"{{ $json.poster_url }}\" \\\n  --rating     \"{{ $json.imdb_rating }}\" \\\n  --title      \"{{ $json.title }}\" \\\n  --genres     \"{{ $json.genres }}\" \\\n  --year       \"{{ $json.release_year }}\" \\\n  --movie-id   \"{{ $json.tmdb_id }}\" \\\n  --output     \"/tmp/n8n-movies/{{ $json.tmdb_id }}_overlay.jpg\" \\\n  --s3-bucket  \"YOUR_BUCKET_NAME\" \\\n  --s3-region  \"YOUR_AWS_REGION\""
+      },
+      "id": "node_exec",
+      "name": "Execute – overlay.py",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [260, 1140],
+      "notes": "Replace /YOUR/PATH, YOUR_BUCKET_NAME, YOUR_AWS_REGION before importing"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the S3 public URL printed to stdout by overlay.py\n// and attach it alongside the existing movie fields\nconst s3Url = $json.stdout.trim();\nconst prev  = $('Enrich – merge fields').first().json;\n\nif (!s3Url.startsWith('https://')) {\n  throw new Error('overlay.py did not return a valid S3 URL. stderr: ' + $json.stderr);\n}\n\nreturn [{ json: { ...prev, s3_image_url: s3Url } }];"
+      },
+      "id": "node_parse_url",
+      "name": "Parse S3 URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 1300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect ALL enriched movies from all loop iterations\n// The loop node merges them here automatically after the last batch\nreturn $input.all().map(item => ({ json: item.json }));"
+      },
+      "id": "node_collect",
+      "name": "Collect all movies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 1460]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a film curator. You receive a JSON array of popular movies. Identify the single strongest recurring theme across the list (e.g. 'heist films', 'sci-fi survival', 'psychological thriller'). Return ONLY valid JSON — no markdown, no explanation — in this exact shape: {\"theme\": \"<theme name>\", \"reasoning\": \"<one sentence>\", \"emoji\": \"<single relevant emoji>\"}"
+            },
+            {
+              "role": "user",
+              "content": "={{ JSON.stringify($input.all().map(i => ({ title: i.json.title, genres: i.json.genres, year: i.json.release_year }))) }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.4 }
+      },
+      "id": "node_ai_theme",
+      "name": "AI – pick theme",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [260, 1620],
+      "credentials": { "openAiApi": { "id": "OPENAI_CRED_ID", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse theme JSON from OpenAI response\nconst raw = $json.message?.content || $json.choices?.[0]?.message?.content || '';\ntry {\n  const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());\n  return [{ json: parsed }];\n} catch(e) {\n  throw new Error('AI theme response was not valid JSON: ' + raw);\n}"
+      },
+      "id": "node_parse_theme",
+      "name": "Parse theme JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 1780]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a film recommendation engine. Given a theme, return exactly 5 movie recommendations. Return ONLY valid JSON array — no markdown — each item: {\"title\": string, \"year\": number, \"hook\": string (≤120 chars), \"why\": string (≤80 chars)}"
+            },
+            {
+              "role": "user",
+              "content": "=Theme: \"{{ $json.theme }}\". Reasoning: {{ $json.reasoning }}. Recommend 5 movies that fit this theme perfectly. Avoid movies already in this list: {{ $('Collect all movies').all().map(i=>i.json.title).join(', ') }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7 }
+      },
+      "id": "node_ai_recs",
+      "name": "AI – recommendations",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [260, 1940],
+      "credentials": { "openAiApi": { "id": "OPENAI_CRED_ID", "name": "OpenAI" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the final Instagram post data object\nconst raw = $json.message?.content || $json.choices?.[0]?.message?.content || '';\nconst recs = JSON.parse(raw.replace(/```json|```/g, '').trim());\nconst themeData = $('Parse theme JSON').first().json;\nconst movies    = $('Collect all movies').all().map(i => i.json);\n\n// Caption strategy: theme intro + top 3 current movies + 5 recs\nconst currentSection = movies.slice(0, 3).map((m, idx) =>\n  `${['🥇','🥈','🥉'][idx]} *${m.title}* (${m.release_year}) — ⭐ ${m.imdb_rating}\\n${m.genres.split(',').slice(0,2).join(' · ')}`\n).join('\\n\\n');\n\nconst recsSection = recs.map((r, idx) =>\n  `${idx+1}. *${r.title}* (${r.year}) — ${r.hook}`\n).join('\\n');\n\nconst hashtags = [\n  '#movies', '#film', '#cinema', '#movienight', '#imdb',\n  '#' + themeData.theme.replace(/\\s+/g,''),\n  '#nowplaying', '#filmrecommendations', '#moviestowatch', '#netflix'\n].join(' ');\n\nconst caption = [\n  `${themeData.emoji} This week's vibe: *${themeData.theme}*`,\n  '',\n  '🎬 Trending now:',\n  currentSection,\n  '',\n  `💡 More picks for the theme:`,\n  recsSection,\n  '',\n  hashtags\n].join('\\n');\n\nreturn [{\n  json: {\n    theme:        themeData.theme,\n    theme_emoji:  themeData.emoji,\n    caption:      caption,\n    hashtags:     hashtags,\n    recs:         recs,\n    movies:       movies,\n    s3_urls:      movies.map(m => m.s3_image_url).filter(Boolean),\n    created_at:   new Date().toISOString(),\n  }\n}];"
+      },
+      "id": "node_compose",
+      "name": "Compose post data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 2100]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID", "__rl": true, "mode": "id" },
+        "sheetName": { "value": "Sheet1", "__rl": true, "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp":            "={{ $json.created_at }}",
+            "Theme":                "={{ $json.theme }}",
+            "Movies (titles)":      "={{ $json.movies.map(m=>m.title).join(' | ') }}",
+            "IMDB Ratings":         "={{ $json.movies.map(m=>m.imdb_rating).join(' | ') }}",
+            "Genres":               "={{ $json.movies.map(m=>m.genres.split(',').slice(0,2).join('/')).join(' | ') }}",
+            "S3 Image URLs":        "={{ $json.s3_urls.join('\\n') }}",
+            "Caption":              "={{ $json.caption }}",
+            "Instagram Media ID":   "=PENDING",
+            "Post Status":          "=queued"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_sheets",
+      "name": "Google Sheets – log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [260, 2260],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "GSHEETS_CRED_ID", "name": "Google Sheets" } }
+    }
+  ],
+  "connections": {
+    "Daily 8am trigger":       { "main": [[{ "node": "TMDB – popular",        "type": "main", "index": 0 }, { "node": "TMDB – now playing",    "type": "main", "index": 0 }]] },
+    "TMDB – popular":          { "main": [[{ "node": "Merge lists",            "type": "main", "index": 0 }]] },
+    "TMDB – now playing":      { "main": [[{ "node": "Merge lists",            "type": "main", "index": 1 }]] },
+    "Merge lists":             { "main": [[{ "node": "Deduplicate & top 8",    "type": "main", "index": 0 }]] },
+    "Deduplicate & top 8":     { "main": [[{ "node": "Loop over movies",       "type": "main", "index": 0 }]] },
+    "Loop over movies":        { "main": [[{ "node": "TMDB – movie detail",    "type": "main", "index": 0 }, { "node": "TMDB – movie detail", "type": "main", "index": 0 }]] },
+    "TMDB – movie detail":     { "main": [[{ "node": "RapidAPI – IMDB data",   "type": "main", "index": 0 }]] },
+    "RapidAPI – IMDB data":    { "main": [[{ "node": "Enrich – merge fields",  "type": "main", "index": 0 }]] },
+    "Enrich – merge fields":   { "main": [[{ "node": "Execute – overlay.py",   "type": "main", "index": 0 }]] },
+    "Execute – overlay.py":    { "main": [[{ "node": "Parse S3 URL",           "type": "main", "index": 0 }]] },
+    "Parse S3 URL":            { "main": [[{ "node": "Loop over movies",        "type": "main", "index": 0 }]] },
+    "Loop over movies (done)": { "main": [[{ "node": "Collect all movies",      "type": "main", "index": 0 }]] },
+    "Collect all movies":      { "main": [[{ "node": "AI – pick theme",         "type": "main", "index": 0 }]] },
+    "AI – pick theme":         { "main": [[{ "node": "Parse theme JSON",        "type": "main", "index": 0 }]] },
+    "Parse theme JSON":        { "main": [[{ "node": "AI – recommendations",    "type": "main", "index": 0 }]] },
+    "AI – recommendations":    { "main": [[{ "node": "Compose post data",       "type": "main", "index": 0 }]] },
+    "Compose post data":       { "main": [[{ "node": "Google Sheets – log",     "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "_meta": {
+    "placeholders": {
+      "TMDB_CRED_ID":    "Create in n8n → Settings → Credentials → HTTP Header Auth. Header name: Authorization, value: Bearer YOUR_TMDB_API_KEY",
+      "RAPIDAPI_CRED_ID":"Create HTTP Header Auth credential with two headers: X-RapidAPI-Key and X-RapidAPI-Host: imdb236.p.rapidapi.com",
+      "OPENAI_CRED_ID":  "Create OpenAI credential with your API key",
+      "GSHEETS_CRED_ID": "Create Google Sheets OAuth2 credential",
+      "YOUR_GOOGLE_SHEET_ID": "From your Sheet URL: docs.google.com/spreadsheets/d/THIS_PART/edit"
+    }
+  }
+}
