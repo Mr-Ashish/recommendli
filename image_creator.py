@@ -351,7 +351,9 @@ def main():
     )
 
     # ── 7. Save locally ───────────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    output_dir = os.path.dirname(args.output)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     out_img = img.convert("RGB")
     out_img.save(args.output, "JPEG", quality=95, optimize=True)
 
