@@ -24,6 +24,9 @@ import requests
 import boto3
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+from dotenv import load_dotenv
+
+load_dotenv()   # reads .env from the working directory into os.environ
 
 # ── IMDB brand colours ─────────────────────────────────────────────────────────
 IMDB_YELLOW   = (245, 197, 24)       # #F5C518
@@ -255,8 +258,8 @@ def parse_args():
     p.add_argument("--year",      required=True,  help="Release year")
     p.add_argument("--movie-id",  required=True,  help="TMDB movie ID (used for S3 key)")
     p.add_argument("--output",    required=True,  help="Local output path, e.g. /tmp/n8n-movies/123.jpg")
-    p.add_argument("--s3-bucket", required=True,  help="S3 bucket name")
-    p.add_argument("--s3-region", required=True,  help="AWS region, e.g. ap-south-1")
+    p.add_argument("--s3-bucket", default=None,   help="S3 bucket name (overrides S3_BUCKET env var)")
+    p.add_argument("--s3-region", default=None,   help="AWS region (overrides S3_REGION env var)")
     return p.parse_args()
 
 
@@ -353,25 +356,30 @@ def main():
     out_img.save(args.output, "JPEG", quality=95, optimize=True)
 
     # ── 8. Upload to S3 ───────────────────────────────────────────────────────
-    # s3_key = f"movie-overlays/{args.movie_id}_overlay.jpg"
-    # s3     = boto3.client("s3", region_name=args.s3_region)
+    s3_bucket = args.s3_bucket or os.environ.get("S3_BUCKET")
+    s3_region = args.s3_region or os.environ.get("S3_REGION")
+    if not s3_bucket or not s3_region:
+        sys.exit("S3_BUCKET and S3_REGION must be set in .env or passed as CLI args")
 
-    # s3.upload_file(
-    #     args.output,
-    #     args.s3_bucket,
-    #     s3_key,
-    #     ExtraArgs={
-    #         "ContentType": "image/jpeg",
-    #         "ACL":         "public-read",
-    #     },
-    # )
+    # boto3 automatically picks up AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+    # from the environment (loaded from .env by load_dotenv above).
+    s3_key = f"movie-overlays/{args.movie_id}_overlay.jpg"
+    s3     = boto3.client("s3", region_name=s3_region)
 
-    # public_url = (
-    #     f"https://{args.s3_bucket}.s3.{args.s3_region}.amazonaws.com/{s3_key}"
-    # )
+    s3.upload_file(
+        args.output,
+        s3_bucket,
+        s3_key,
+        ExtraArgs={
+            "ContentType": "image/jpeg",
+            "ACL":         "public-read",
+        },
+    )
+
+    public_url = f"https://{s3_bucket}.s3.{s3_region}.amazonaws.com/{s3_key}"
 
     # ── 9. Print URL to stdout (n8n reads this) ───────────────────────────────
-    # print(public_url)
+    print(public_url)
 
 
 if __name__ == "__main__":
