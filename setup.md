@@ -9,6 +9,10 @@ pip3 install -r requirements.txt
 aws configure        # or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in env
 ```
 
+## 1b. Bundled fonts (recommended)
+
+The script prefers TTF files in the repo’s `fonts/` directory so output does not rely on OS fonts. See [`fonts/README.txt`](fonts/README.txt) for download links (e.g. Inter + optional Noto Color Emoji), exact filenames, `RECOMMENDLI_FONTS_DIR`, and `RECOMMENDLI_ALLOW_SYSTEM_FONTS`.
+
 ## 2. S3 bucket
 ```bash
 # Create bucket (if not already done)
@@ -70,6 +74,23 @@ python3 overlay.py \
 
 # Should print the public S3 URL if everything is wired correctly
 ```
+
+### Cover image type (`--image-type cover`)
+
+Story-style bottom text (fixed copy + dynamic uppercase title). Does **not** use `--rating`, `--genres`, or `--year`. Uses the **same** S3 object key as IMDb mode (`movie-overlays/{movie_id}_overlay.jpg`).
+
+```bash
+python3 image_creator.py \
+  --image-type cover \
+  --input    "https://image.tmdb.org/t/p/w780/qNBAXBIQlnOThrVvA6mA2B5ggV6.jpg" \
+  --title    "The Matrix" \
+  --movie-id "603" \
+  --output   "/tmp/test_cover.jpg" \
+  --s3-bucket "YOUR_BUCKET_NAME" \
+  --s3-region "YOUR_AWS_REGION"
+```
+
+Cover mode draws two teaser lines plus the swipe/CTA line (with emoji when a color emoji font is available). No movie title. Lighter bottom gradient than IMDb mode.
 
 ## 7. n8n Execute Command node — exact string
 ```
