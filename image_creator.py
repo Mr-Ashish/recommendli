@@ -640,6 +640,74 @@ def render_imdb_overlay(img: Image.Image, args, genres: list) -> Image.Image:
     return img
 
 
+# ── Storage upload ─────────────────────────────────────────────────────────────
+
+def _upload_s3(local_path: str, s3_key: str, bucket: str, region: str) -> str:
+    """Upload to AWS S3. Returns the public URL."""
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+    )
+    client.upload_file(
+        local_path, bucket, s3_key,
+        ExtraArgs={"ContentType": "image/jpeg"},
+    )
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
+
+
+def _upload_r2(local_path: str, s3_key: str) -> str:
+    """Upload to Cloudflare R2 (S3-compatible). Returns the public URL."""
+    account_id  = os.environ.get("CF_R2_ACCOUNT_ID")
+    access_key  = os.environ.get("CF_R2_ACCESS_KEY_ID")
+    secret_key  = os.environ.get("CF_R2_SECRET_ACCESS_KEY")
+    bucket      = os.environ.get("CF_R2_BUCKET")
+    public_base = os.environ.get("CF_R2_PUBLIC_URL_BASE", "").rstrip("/")
+
+    missing = [k for k, v in {
+        "CF_R2_ACCOUNT_ID": account_id,
+        "CF_R2_ACCESS_KEY_ID": access_key,
+        "CF_R2_SECRET_ACCESS_KEY": secret_key,
+        "CF_R2_BUCKET": bucket,
+    }.items() if not v]
+    if missing:
+        sys.exit(f"R2 upload requires these env vars: {', '.join(missing)}")
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        region_name="auto",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+    )
+    client.upload_file(
+        local_path, bucket, s3_key,
+        ExtraArgs={"ContentType": "image/jpeg"},
+    )
+    if public_base:
+        return f"{public_base}/{s3_key}"
+    return f"https://{bucket}.{account_id}.r2.cloudflarestorage.com/{s3_key}"
+
+
+def upload_image(local_path: str, s3_key: str, provider: str,
+                 s3_bucket: Optional[str] = None, s3_region: Optional[str] = None) -> str:
+    """
+    Upload `local_path` to the chosen storage provider.
+    provider: 's3' or 'r2'
+    Returns the public URL.
+    """
+    if provider == "r2":
+        return _upload_r2(local_path, s3_key)
+
+    # Default: AWS S3
+    bucket = s3_bucket or os.environ.get("S3_BUCKET")
+    region = s3_region or os.environ.get("S3_REGION")
+    if not bucket or not region:
+        sys.exit("S3 upload requires S3_BUCKET and S3_REGION (env or --s3-bucket / --s3-region)")
+    return _upload_s3(local_path, s3_key, bucket, region)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -659,6 +727,12 @@ def parse_args():
     p.add_argument("--output", required=True, help="Local output path, e.g. /tmp/n8n-movies/123.jpg")
     p.add_argument("--s3-bucket", default=None, help="S3 bucket name (overrides S3_BUCKET env var)")
     p.add_argument("--s3-region", default=None, help="AWS region (overrides S3_REGION env var)")
+    p.add_argument(
+        "--storage",
+        choices=("s3", "r2"),
+        default=None,
+        help="Storage provider: s3 (AWS) or r2 (Cloudflare). Overrides STORAGE_PROVIDER env var.",
+    )
     return p.parse_args()
 
 
@@ -684,27 +758,14 @@ def main():
     out_img = img.convert("RGB")
     out_img.save(args.output, "JPEG", quality=95, optimize=True)
 
-    # ── 8. Upload to S3 ───────────────────────────────────────────────────────
-    s3_bucket = args.s3_bucket or os.environ.get("S3_BUCKET")
-    s3_region = args.s3_region or os.environ.get("S3_REGION")
-    if not s3_bucket or not s3_region:
-        sys.exit("S3_BUCKET and S3_REGION must be set in .env or passed as CLI args")
-
-    # boto3 automatically picks up AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-    # from the environment (loaded from .env by load_dotenv above).
-    s3_key = f"movie-overlays/{args.movie_id}_overlay.jpg"
-    s3     = boto3.client("s3", region_name=s3_region)
-
-    s3.upload_file(
-        args.output,
-        s3_bucket,
-        s3_key,
-        ExtraArgs={
-            "ContentType": "image/jpeg",
-        },
+    # ── 8. Upload ─────────────────────────────────────────────────────────────
+    provider   = args.storage or os.environ.get("STORAGE_PROVIDER", "s3")
+    s3_key     = f"movie-overlays/{args.movie_id}_overlay.jpg"
+    public_url = upload_image(
+        args.output, s3_key, provider,
+        s3_bucket=args.s3_bucket,
+        s3_region=args.s3_region,
     )
-
-    public_url = f"https://{s3_bucket}.s3.{s3_region}.amazonaws.com/{s3_key}"
 
     # ── 9. Print URL to stdout (n8n reads this) ───────────────────────────────
     print(public_url)
